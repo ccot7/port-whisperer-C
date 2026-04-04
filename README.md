@@ -1,6 +1,6 @@
-# port-whisperer
+# port-whisperer-C
 
-**A beautiful CLI tool to see what's running on your ports — bare-metal C edition.**
+**A beautiful CLI tool to see what's running on your ports - bare-metal C edition.**
 
 Inspired by [LarsenCundric/port-whisperer](https://github.com/LarsenCundric/port-whisperer), rewritten from scratch in pure C with zero runtime dependencies.  
 Works on **Linux** (Fedora/Wayland and other distros) and **macOS** (Intel & Apple Silicon).
@@ -130,7 +130,7 @@ Polls every 2 seconds. Prints timestamped lines when ports open (`+`) or close (
 ```
 ports clean
 ```
-Finds processes whose working directory no longer exists or that are in zombie state, and sends `SIGTERM`. Only targets dev runtimes (node, python, ruby, etc.) — never touches desktop apps.
+Finds processes whose working directory no longer exists or that are in zombie state, and sends `SIGTERM`. Only targets dev runtimes (node, python, ruby, etc.) - never touches desktop apps.
 
 ### Help
 ```
@@ -142,19 +142,19 @@ ports --help
 ## How it works
 
 ### Linux
-1. **`lsof -iTCP -sTCP:LISTEN -nP`** — finds all TCP listening ports and their PIDs
-2. **`/proc/<pid>/cmdline`** — reads the full command line directly from procfs (no `ps` call needed)
-3. **`/proc/<pid>/cwd`** — symlink read to get the process working directory
-4. **`/proc/<pid>/stat`** — parses process state and start time for uptime calculation
-5. **`/proc/<pid>/status`** — reads `VmRSS` for memory usage
-6. **`docker ps`** (optional) — maps host ports to container names and images
-7. **Framework detection** — reads project files in the process CWD
+1. **`lsof -iTCP -sTCP:LISTEN -nP`** - finds all TCP listening ports and their PIDs
+2. **`/proc/<pid>/cmdline`** - reads the full command line directly from procfs (no `ps` call needed)
+3. **`/proc/<pid>/cwd`** - symlink read to get the process working directory
+4. **`/proc/<pid>/stat`** - parses process state and start time for uptime calculation
+5. **`/proc/<pid>/status`** - reads `VmRSS` for memory usage
+6. **`docker ps`** (optional) - maps host ports to container names and images
+7. **Framework detection** - reads project files in the process CWD
 
 ### macOS
-1. **`lsof -iTCP -sTCP:LISTEN -nP`** — same as Linux
-2. **`ps -p <pid> -o etimes=,rss=,%cpu=`** — single batched call per process
-3. **`lsof -p <pid> -d cwd`** — resolves working directory
-4. **`docker ps`** (optional) — container mapping
+1. **`lsof -iTCP -sTCP:LISTEN -nP`** - same as Linux
+2. **`ps -p <pid> -o etimes=,rss=,%cpu=`** - single batched call per process
+3. **`lsof -p <pid> -d cwd`** - resolves working directory
+4. **`docker ps`** (optional) - container mapping
 
 ### Framework detection
 Reads project files in the process's working directory:
@@ -186,8 +186,8 @@ rm ~/.local/bin/ports
 
 ## Known limitations
 
-- **`ports ps --all` is slow on macOS** — in `--all` mode every process gets its CWD resolved via `lsof -p <pid>`, meaning hundreds of serial `lsof` calls. Use `ports ps` (dev-filtered) instead; it's fast. Batched CWD resolution is a planned fix.
-- **`make` newline warning on macOS clang** — if you see `-Wnewline-eof`, run `echo "" >> src/main.c` once to fix your local copy.
+- **`ports ps --all` is slow on macOS** - in `--all` mode every process gets its CWD resolved via `lsof -p <pid>`, meaning hundreds of serial `lsof` calls. Use `ports ps` (dev-filtered) instead; it's fast. Batched CWD resolution is a planned fix.
+- **`make` newline warning on macOS clang** - if you see `-Wnewline-eof`, run `echo "" >> src/main.c` once to fix your local copy.
 
 ---
 
@@ -203,7 +203,7 @@ rm ~/.local/bin/ports
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).
 
 ---
 

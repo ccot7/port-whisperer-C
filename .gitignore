@@ -1,0 +1,6 @@
+.build/
+*.o
+*.d
+.DS_Store
+port-whisperer
+.vscode/

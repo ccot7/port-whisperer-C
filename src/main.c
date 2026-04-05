@@ -829,6 +829,12 @@ static const char *status_render(const char *s) {
     return buf;
 }
 
+/*
+ * Print one table cell.
+ * `width` is the column width in display columns (from display_width()).
+ * `raw_len` is the raw byte length of s (for correct printf padding when
+ * the string contains ANSI escapes or multibyte chars).
+ */
 static void print_cell(const char *s, int width, int last) {
     int dw = display_width(s);
     printf(" %s", s);
@@ -839,6 +845,10 @@ static void print_cell(const char *s, int width, int last) {
 /* ── ports table ─────────────────────────────────────────────── */
 
 static void print_ports_table(void) {
+  /* Banner box. BANNER_INNER = visible width between the two │ chars.
+     * "  Port Whisperer  " = 2 + 14 + padding
+     * "  listening to your ports...  " = 2 + 26 + padding
+     * We pick BANNER_INNER = 30 so both lines have at least 2 trailing spaces. */
 #define BANNER_INNER 30
     printf("\n");
     // Top Border
@@ -869,6 +879,7 @@ static void print_ports_table(void) {
     int ncols = 7;
     int widths[7] = { 6, 8, 6, 12, 10, 8, 10 };
 
+    /* Measure using display_width so multibyte chars count correctly */
     for (int i = 0; i < g_nports; i++) {
         PortEntry *pe = &g_ports[i];
         char portstr[16]; snprintf(portstr, sizeof(portstr), ":%d", pe->port);
@@ -881,7 +892,7 @@ static void print_ports_table(void) {
             display_width(pe->project),
             display_width(pe->framework),
             display_width(upstr),
-            display_width(pe->status) + 2
+            display_width(pe->status) + 2 /* dot + space */
         };
         for (int c = 0; c < ncols; c++)
             if (lens[c] > widths[c]) widths[c] = lens[c];
@@ -1036,7 +1047,7 @@ static void inspect_port(int target) {
     char branch[SMBUF] = "-";
     if (pe->cwd[0]) {
         char safe_cwd[PATH_MAX + 1];
-        char cmd[PATH_MAX + 128];
+        char cmd[PATH_MAX + 128]; // Big enough for the path + the git command string
         snprintf(safe_cwd, sizeof(safe_cwd), "%s", pe->cwd);
         snprintf(cmd, sizeof(cmd),
                  "git -C '%s' rev-parse --abbrev-ref HEAD 2>/dev/null", safe_cwd);

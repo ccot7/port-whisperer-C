@@ -186,7 +186,6 @@ rm ~/.local/bin/ports
 
 ## Known limitations
 
-- **`ports ps --all` is slow on macOS** - in `--all` mode every process gets its CWD resolved via `lsof -p <pid>`, meaning hundreds of serial `lsof` calls. Use `ports ps` (dev-filtered) instead; it's fast. Batched CWD resolution is a planned fix.
 - **`make` newline warning on macOS clang** - if you see `-Wnewline-eof`, run `echo "" >> src/main.c` once to fix your local copy.
 
 ---

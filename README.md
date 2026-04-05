@@ -62,8 +62,8 @@ $ ports
 
 ```bash
 # Clone
-git clone https://github.com/yourname/port-whisperer.git
-cd port-whisperer
+git clone https://github.com/ccot7/port-whisperer-C.git
+cd port-whisperer-C
 
 # Build
 make

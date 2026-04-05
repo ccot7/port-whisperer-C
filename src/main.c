@@ -295,15 +295,27 @@ static void docker_image_name(const char *image, char *out, size_t sz) {
    PROCESS INFO
    ════════════════════════════════════════════════════════════════ */
 
+/*
+ * fill_proc_info — populates process details for a given PID.
+ *
+ * cwd_hint (macOS only): if non-NULL and non-empty, use this as the CWD
+ * instead of calling lsof. This allows scan_procs to batch all CWD
+ * lookups into a single lsof call via batch_resolve_cwds().
+ * Pass NULL from scan_ports (which handles only a few ports at a time).
+ */
 static void fill_proc_info(pid_t pid, char *cmdline, size_t cmd_sz,
                             char *cwd_buf, size_t cwd_sz,
                             long *uptime_s, long *mem_kb, float *cpu_pct,
-                            char *status, size_t st_sz) {
+                            char *status, size_t st_sz,
+                            const char *cwd_hint) {
     cmdline[0] = '\0'; cwd_buf[0] = '\0';
     *uptime_s = -1; *mem_kb = 0; *cpu_pct = 0.0f;
     snprintf(status, st_sz, "healthy");
 
 #ifdef PLATFORM_LINUX
+    /* cwd_hint unused on Linux — we read /proc directly */
+    (void)cwd_hint;
+
     char path[BUF];
     snprintf(path, sizeof(path), "/proc/%d/cmdline", pid);
     FILE *f = fopen(path, "r");
@@ -400,13 +412,19 @@ static void fill_proc_info(pid_t pid, char *cmdline, size_t cmd_sz,
         free(out);
     }
 
-    snprintf(cmd, sizeof(cmd), "lsof -p %d -d cwd -Fn 2>/dev/null | grep '^n' | head -1", pid);
-    out = run_cmd(cmd);
-    if (out) {
-        char *nl = strchr(out, '\n');
-        if (nl) *nl = '\0';
-        if (out[0] == 'n') snprintf(cwd_buf, cwd_sz, "%s", out + 1);
-        free(out);
+    /* CWD: use pre-resolved hint if available, else fall back to lsof */
+    if (cwd_hint && cwd_hint[0]) {
+        snprintf(cwd_buf, cwd_sz, "%s", cwd_hint);
+    } else {
+        snprintf(cmd, sizeof(cmd),
+            "lsof -p %d -d cwd -Fn 2>/dev/null | grep '^n' | head -1", pid);
+        out = run_cmd(cmd);
+        if (out) {
+            char *nl = strchr(out, '\n');
+            if (nl) *nl = '\0';
+            if (out[0] == 'n') snprintf(cwd_buf, cwd_sz, "%s", out + 1);
+            free(out);
+        }
     }
 
     snprintf(cmd, sizeof(cmd), "ps -p %d -o etimes=,rss=,%%cpu= 2>/dev/null", pid);
@@ -569,10 +587,12 @@ static void scan_ports(void) {
             }
         }
 
+        /* NULL hint: scan_ports handles few ports, per-pid lsof is fine */
         fill_proc_info(pid, pe->cmdline, sizeof(pe->cmdline),
                        pe->cwd, sizeof(pe->cwd),
                        &pe->uptime_s, &pe->mem_kb, &pe->cpu_pct,
-                       pe->status, sizeof(pe->status));
+                       pe->status, sizeof(pe->status),
+                       NULL);
 
         if (pe->cwd[0])
             detect_framework(pe->cwd, pe->cmdline,
@@ -601,6 +621,61 @@ static void scan_ports(void) {
 }
 
 /* ════════════════════════════════════════════════════════════════
+   BATCH CWD RESOLUTION  (macOS only)
+   ════════════════════════════════════════════════════════════════ */
+
+#ifdef PLATFORM_MACOS
+/*
+ * Resolve CWDs for multiple PIDs with a single lsof call instead of
+ * one lsof call per PID. This is the fix for `ports ps --all` being slow.
+ *
+ * pids[count]  — input PID array
+ * cwds[count]  — output: cwds[i] receives the CWD for pids[i], or "" if not found
+ * Each cwd entry is PATH_MAX+1 bytes.
+ */
+static void batch_resolve_cwds(pid_t *pids, char (*cwds)[PATH_MAX + 1], int count) {
+    if (count <= 0) return;
+
+    /* Build comma-separated PID list: max 512 PIDs × 7 digits + comma = ~4096 bytes */
+    char pidlist[MAX_PROCS * 8];
+    int off = 0;
+    for (int i = 0; i < count && off < (int)sizeof(pidlist) - 8; i++)
+        off += snprintf(pidlist + off, sizeof(pidlist) - (size_t)off,
+                        i == 0 ? "%d" : ",%d", pids[i]);
+
+    char cmd[sizeof(pidlist) + 64];
+    snprintf(cmd, sizeof(cmd), "lsof -p %s -d cwd -Fn 2>/dev/null", pidlist);
+    char *out = run_cmd(cmd);
+    if (!out) return;
+
+    /*
+     * lsof -Fn output format:
+     *   p<pid>
+     *   f<fd>
+     *   n<path>
+     * We only care about 'p' and 'n' lines.
+     */
+    pid_t cur = -1;
+    char *line = strtok(out, "\n");
+    while (line) {
+        if (line[0] == 'p') {
+            cur = (pid_t)atoi(line + 1);
+        } else if (line[0] == 'n' && cur > 0) {
+            for (int i = 0; i < count; i++) {
+                if (pids[i] == cur) {
+                    snprintf(cwds[i], PATH_MAX + 1, "%s", line + 1);
+                    break;
+                }
+            }
+            cur = -1; /* reset: each pid has exactly one cwd */
+        }
+        line = strtok(NULL, "\n");
+    }
+    free(out);
+}
+#endif /* PLATFORM_MACOS */
+
+/* ════════════════════════════════════════════════════════════════
    PROCESS SCAN
    ════════════════════════════════════════════════════════════════ */
 
@@ -623,8 +698,13 @@ static void scan_procs(void) {
     long  docker_total_mem = 0;
     float docker_total_cpu = 0;
 
+    /* ── Pass 1: filter and collect PIDs + basic fields ── */
+    typedef struct { pid_t pid; char proc[SMBUF]; float cpu; } RawProc;
+    static RawProc raw[MAX_PROCS];
+    int nraw = 0;
+
     char *line = strtok(out, "\n");
-    while (line && g_nprocs < MAX_PROCS) {
+    while (line && nraw < MAX_PROCS) {
         char pidstr[SMBUF]={0}, cpustr[SMBUF]={0}, memstr[SMBUF]={0}, proc[SMBUF]={0};
         sscanf(line, "%255s %255s %255s %255s", pidstr, cpustr, memstr, proc);
         pid_t pid = (pid_t)atoi(pidstr);
@@ -645,16 +725,41 @@ static void scan_procs(void) {
             continue;
         }
 
+        raw[nraw].pid = pid;
+        raw[nraw].cpu = (float)atof(cpustr);
+        snprintf(raw[nraw].proc, SMBUF, "%s", proc);
+        nraw++;
+        line = strtok(NULL, "\n");
+    }
+    free(out);
+
+#ifdef PLATFORM_MACOS
+    /* ── Batch resolve all CWDs in one lsof call ── */
+    static pid_t batch_pids[MAX_PROCS];
+    static char  batch_cwds[MAX_PROCS][PATH_MAX + 1];
+    memset(batch_cwds, 0, sizeof(batch_cwds));
+    for (int i = 0; i < nraw; i++) batch_pids[i] = raw[i].pid;
+    batch_resolve_cwds(batch_pids, batch_cwds, nraw);
+#endif
+
+    /* ── Pass 2: fill full proc info using pre-resolved CWDs ── */
+    for (int i = 0; i < nraw && g_nprocs < MAX_PROCS; i++) {
         ProcEntry *pe = &g_procs[g_nprocs];
         memset(pe, 0, sizeof(*pe));
-        pe->pid = pid;
-        snprintf(pe->process, sizeof(pe->process), "%s", proc);
-        pe->cpu_pct = (float)atof(cpustr);
+        pe->pid = raw[i].pid;
+        snprintf(pe->process, sizeof(pe->process), "%s", raw[i].proc);
+        pe->cpu_pct = raw[i].cpu;
 
-        fill_proc_info(pid, pe->cmdline, sizeof(pe->cmdline),
+#ifdef PLATFORM_MACOS
+        const char *hint = batch_cwds[i];
+#else
+        const char *hint = NULL;
+#endif
+        fill_proc_info(raw[i].pid, pe->cmdline, sizeof(pe->cmdline),
                        pe->cwd, sizeof(pe->cwd),
                        &pe->uptime_s, &pe->mem_kb, &pe->cpu_pct,
-                       pe->status, sizeof(pe->status));
+                       pe->status, sizeof(pe->status),
+                       hint);
 
         if (pe->cwd[0])
             detect_framework(pe->cwd, pe->cmdline,
@@ -676,11 +781,8 @@ static void scan_procs(void) {
             }
         }
         str_trim(pe->cmdline);
-
         g_nprocs++;
-        line = strtok(NULL, "\n");
     }
-    free(out);
 
     if (docker_count > 0 && g_nprocs + 1 < MAX_PROCS) {
         memmove(&g_procs[1], &g_procs[0], sizeof(ProcEntry) * (size_t)g_nprocs);
@@ -727,12 +829,6 @@ static const char *status_render(const char *s) {
     return buf;
 }
 
-/*
- * Print one table cell.
- * `width` is the column width in display columns (from display_width()).
- * `raw_len` is the raw byte length of s (for correct printf padding when
- * the string contains ANSI escapes or multibyte chars).
- */
 static void print_cell(const char *s, int width, int last) {
     int dw = display_width(s);
     printf(" %s", s);
@@ -743,28 +839,20 @@ static void print_cell(const char *s, int width, int last) {
 /* ── ports table ─────────────────────────────────────────────── */
 
 static void print_ports_table(void) {
-    /* Banner box. BANNER_INNER = visible width between the two │ chars.
-     * "  Port Whisperer  " = 2 + 14 + padding
-     * "  listening to your ports...  " = 2 + 26 + padding
-     * We pick BANNER_INNER = 30 so both lines have at least 2 trailing spaces. */
 #define BANNER_INNER 30
-   printf("\n");
-    
+    printf("\n");
     // Top Border
     printf(" " BOX_TL);
     for (int i = 0; i < BANNER_INNER; i++) printf(BOX_H);
     printf(BOX_TR "\n");
-
     // Line 1: "Port Whisperer" (14 visible chars)
     // Formula: BANNER_INNER - 2 (leading spaces) - 14 (text length)
-    printf(" " BOX_V "  " COL_CYAN COL_BOLD "Port Whisperer" COL_RESET "%*s" BOX_V "\n", 
+    printf(" " BOX_V "  " COL_CYAN COL_BOLD "Port Whisperer" COL_RESET "%*s" BOX_V "\n",
            (BANNER_INNER - 2 - 14), "");
-
     // Line 2: "listening to your ports..." (26 visible chars)
     // Formula: BANNER_INNER - 2 (leading spaces) - 26 (text length)
-    printf(" " BOX_V "  " COL_DIM "listening to your ports..." COL_RESET "%*s" BOX_V "\n", 
+    printf(" " BOX_V "  " COL_DIM "listening to your ports..." COL_RESET "%*s" BOX_V "\n",
            (BANNER_INNER - 2 - 26), "");
-
     // Bottom Border
     printf(" " BOX_BL);
     for (int i = 0; i < BANNER_INNER; i++) printf(BOX_H);
@@ -781,7 +869,6 @@ static void print_ports_table(void) {
     int ncols = 7;
     int widths[7] = { 6, 8, 6, 12, 10, 8, 10 };
 
-    /* Measure using display_width so multibyte chars count correctly */
     for (int i = 0; i < g_nports; i++) {
         PortEntry *pe = &g_ports[i];
         char portstr[16]; snprintf(portstr, sizeof(portstr), ":%d", pe->port);
@@ -794,7 +881,7 @@ static void print_ports_table(void) {
             display_width(pe->project),
             display_width(pe->framework),
             display_width(upstr),
-            display_width(pe->status) + 2  /* dot + space */
+            display_width(pe->status) + 2
         };
         for (int c = 0; c < ncols; c++)
             if (lens[c] > widths[c]) widths[c] = lens[c];
@@ -945,13 +1032,11 @@ static void inspect_port(int target) {
     fmt_uptime(pe->uptime_s, upstr, sizeof(upstr));
     fmt_mem(pe->mem_kb, memstr, sizeof(memstr));
 
-    /* Git branch — use a fixed cap on cwd so GCC can verify no truncation */
+    /* Git branch */
     char branch[SMBUF] = "-";
     if (pe->cwd[0]) {
-        /* "git -C '<cwd>' rev-parse --abbrev-ref HEAD 2>/dev/null"
-         * fixed part = 50 chars; give cwd up to 4000 chars, cmd buf = 4096 */
         char safe_cwd[PATH_MAX + 1];
-        char cmd[PATH_MAX + 128]; // Big enough for the path + the git command string
+        char cmd[PATH_MAX + 128];
         snprintf(safe_cwd, sizeof(safe_cwd), "%s", pe->cwd);
         snprintf(cmd, sizeof(cmd),
                  "git -C '%s' rev-parse --abbrev-ref HEAD 2>/dev/null", safe_cwd);

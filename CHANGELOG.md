@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.1] - 2026-04-05
+
+### Fixed
+- BATCH CWD RESOLUTION (macOS only) - ie: >ports ps --all
+
 ## [1.0.0] - 2026-04-05
 
 ### Added

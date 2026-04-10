@@ -6,6 +6,7 @@ port-whisperer
 .vscode/
 
 # --- Release specifics ---
+ports
 release_notes.md
 release.sh
 Release-how-to.txt

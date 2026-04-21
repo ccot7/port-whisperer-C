@@ -206,15 +206,15 @@ MIT - see [LICENSE](LICENSE).
 
 ---
 
-## Acknowledgements
-
-Original concept and design by [LarsenCundric](https://github.com/LarsenCundric/port-whisperer).  
-This is an independent bare-metal C reimplementation with no shared code.
-
----
-
 ## 👤 Author
 **Cadmus of Tyre**  
 GitHub: [@ccot7](https://github.com/ccot7)
 
 ---
+
+## Acknowledgements
+
+Original concept and design by [LarsenCundric](https://github.com/LarsenCundric/port-whisperer).  
+This is an independent bare-metal C reimplementation with no shared code.
+
+
